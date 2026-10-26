@@ -436,6 +436,7 @@ export type Combo = ParentWidget & {
         isOpened: State<boolean>,
     },
 
+    disconnectIndexChanged: () -> (),
     UIListLayout: UIListLayout,
 } & Opened & Closed & Changed & Clicked & Hovered
 
