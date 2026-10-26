@@ -237,6 +237,8 @@ export type Internal = {
 
     -- State
     _states: { [ID]: State<any> },
+    _discardedStates: { [ID]: State<any> },
+    _stateLifetime: number,
 
     -- Callback
     _postCycleCallbacks: { () -> () },
@@ -275,6 +277,8 @@ export type Internal = {
     _DiscardWidget: (widgetToDiscard: Widget) -> (),
 
     _widgetState: (thisWidget: Widget, stateName: string, initialValue: any) -> State<any>,
+    _releaseState: (state: State<any>) -> (),
+    _collectStates: () -> (),
     _EventCall: (thisWidget: Widget, eventName: string) -> boolean,
     _GetParentWidget: () -> ParentWidget,
     SetFocusedWindow: (thisWidget: WidgetTypes.Window?) -> (),

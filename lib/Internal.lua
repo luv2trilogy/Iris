@@ -53,6 +53,8 @@ return function(Iris: Types.Iris): Types.Internal
 
     -- State
     Internal._states = {} -- Iris.States
+    Internal._discardedStates = {} -- widget states which no widget is connected to, waiting to be removed from _states
+    Internal._stateLifetime = 1800 -- cycles a widget state is kept after its last widget was discarded
 
     -- Callback
     Internal._postCycleCallbacks = {}
@@ -154,8 +156,11 @@ return function(Iris: Types.Iris): Types.Internal
             end
         end
 
-        for _, callback in self.ConnectedFunctions do
-            callback(newValue)
+        if #self.ConnectedFunctions > 0 then
+            -- a callback may disconnect itself, so we iterate over a copy.
+            for _, callback in table.clone(self.ConnectedFunctions) do
+                callback(newValue)
+            end
         end
         return self.value
     end
@@ -174,10 +179,21 @@ return function(Iris: Types.Iris): Types.Internal
         :::
     ]=]
     function StateClass:onChange<T>(callback: (newValue: T) -> ())
-        local connectionIndex: number = #self.ConnectedFunctions + 1
-        self.ConnectedFunctions[connectionIndex] = callback
+        local connectedFunctions = self.ConnectedFunctions
+        table.insert(connectedFunctions, callback)
+
+        local connected = true
         return function()
-            self.ConnectedFunctions[connectionIndex] = nil
+            if connected == false then
+                return
+            end
+            connected = false
+
+            -- the array is kept packed, so an index can't be cached since other disconnections shift it.
+            local index = table.find(connectedFunctions, callback)
+            if index then
+                table.remove(connectedFunctions, index)
+            end
         end
     end
 
@@ -224,6 +240,7 @@ return function(Iris: Types.Iris): Types.Internal
                 Internal._DiscardWidget(widget)
             end
         end
+        Internal._collectStates()
 
         -- represents all widgets created last frame. We keep the _lastVDOM to reuse widgets from the previous frame
         -- rather than creating a new instance every frame.
@@ -680,6 +697,7 @@ return function(Iris: Types.Iris): Types.Internal
         if Internal._states[ID] then
             Internal._states[ID].ConnectedWidgets[thisWidget.ID] = thisWidget
             Internal._states[ID].lastChangeTick = Internal._cycleTick
+            Internal._discardedStates[ID] = nil
             return Internal._states[ID]
         else
             local newState = {
@@ -688,10 +706,51 @@ return function(Iris: Types.Iris): Types.Internal
                 lastChangeTick = Internal._cycleTick,
                 ConnectedWidgets = { [thisWidget.ID] = thisWidget },
                 ConnectedFunctions = {},
+                widgetOwned = true,
             } :: Types.State<T>
             setmetatable(newState, Internal.StateClass)
             Internal._states[ID] = newState
             return newState
+        end
+    end
+
+    --[=[
+        @within Internal
+        @function _releaseState
+        @param state State<any>
+
+        Called when a widget disconnects from a state. If the state was created by a widget and no other widget is
+        using it, then it is scheduled for removal. It is kept for `_stateLifetime` cycles so a widget which is only
+        briefly not rendered gets its state back. Cycles are counted rather than time so that pausing Iris, or a long
+        frame, does not use up the lifetime.
+
+        States created by the user, such as through `Iris.State`, are never removed.
+    ]=]
+    function Internal._releaseState(state: Types.State<any>)
+        if state.widgetOwned ~= true or next(state.ConnectedWidgets) ~= nil then
+            return
+        end
+
+        state.discardedTick = Internal._cycleTick
+        Internal._discardedStates[state.ID] = state
+    end
+
+    --[=[
+        @within Internal
+        @function _collectStates
+
+        Removes the widget states which have not been used by any widget for `_stateLifetime` cycles. Called every cycle.
+        A state is kept if it was reconnected to a widget, or if a function is connected to it with `:onChange()`,
+        since the user may still be holding a reference to it.
+    ]=]
+    function Internal._collectStates()
+        for ID, state in Internal._discardedStates do
+            if Internal._states[ID] ~= state or next(state.ConnectedWidgets) ~= nil or next(state.ConnectedFunctions) ~= nil then
+                Internal._discardedStates[ID] = nil
+            elseif Internal._cycleTick - state.discardedTick >= Internal._stateLifetime then
+                Internal._states[ID] = nil
+                Internal._discardedStates[ID] = nil
+            end
         end
     end
 
